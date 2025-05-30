@@ -1,0 +1,597 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import warnings
+import re
+import requests
+from urllib.parse import urlparse
+from sklearn.metrics import (accuracy_score, precision_score, recall_score, f1_score,
+                             confusion_matrix, roc_auc_score, roc_curve, precision_recall_curve, auc)
+from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import train_test_split
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import MinMaxScaler
+
+# Ignore warnings
+warnings.filterwarnings("ignore")
+
+from google.colab import drive
+drive.mount('/content/drive')
+
+data =pd.read_csv('/content/Modified_Bot_dataset_with_adjusted_url_features (1).csv')
+data.head()
+
+# Load and display the dataset
+try:
+    data = pd.read_csv("/content/Modified_Bot_dataset_with_adjusted_url_features (1).csv")
+    print("Data loaded successfully.")
+except FileNotFoundError:
+    print("Error: Dataset file not found.")
+
+# Strip whitespace from column names (if necessary)
+data.columns = data.columns.str.strip()
+
+# Define your features (X) and target (y) variables
+# Replace 'target_column' with the actual column name representing the target variable in your dataset
+X = data.drop(columns=['Bot Label'])  # Example: 'target_column' could be 'is_bot' or similar
+y = data['Bot Label']  # Set y as the target variable
+
+# Split the data into training and testing sets
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+
+def evaluate_model(y_true, y_pred, model_name="Model"):
+    acc = accuracy_score(y_true, y_pred) * 100
+    prec = precision_score(y_true, y_pred, average='weighted') * 100
+    rec = recall_score(y_true, y_pred, average='weighted') * 100
+    f1 = f1_score(y_true, y_pred, average='weighted') * 100
+    print(f'\n{model_name} Evaluation:')
+    print(f'Accuracy: {acc:.2f}%')
+    print(f'Precision: {prec:.2f}%')
+    print(f'Recall: {rec:.2f}%')
+    print(f'F1 Score: {f1:.2f}%\n')
+try:
+    data = pd.read_csv("/content/Modified_Bot_dataset_with_adjusted_url_features (1).csv")
+    print("Data loaded successfully.")
+except FileNotFoundError:
+    print("Error: Dataset file not found.") 
+print(data.columns)
+data.columns = data.columns.str.strip()
+
+def extract_url_features(url):
+    # Initialize feature dictionary
+    url_features = {
+        'url_frequency': 0,
+        'url_redirection': 0,
+        'url_text': 0,
+        'url_length': 0,
+        'special_char_count': 0,
+        'contains_login': 0,
+        'contains_free': 0,
+        'url_win': 0
+    }
+
+    if not url or not isinstance(url, str):
+        # If URL is empty or not a string, return the default features
+        return url_features
+
+    # Count URL length
+    url_features['url_length'] = len(url)
+    # Count special characters in URL
+    url_features['special_char_count'] = len(re.findall(r'[^a-zA-Z0-9]', url))
+
+    # Check for specific words in URL (such as 'login', 'free', 'win')
+    url_features['contains_login'] = int('login' in url.lower())
+    url_features['contains_free'] = int('free' in url.lower())
+    url_features['url_win'] = int('win' in url.lower())
+    # Detect redirections by following URL
+    try:
+        response = requests.get(url, timeout=5, allow_redirects=True)
+        if len(response.history) > 1:  # If there were redirects
+            url_features['url_redirection'] = 1
+    except requests.exceptions.RequestException:
+        # In case of a request failure, assume no redirection
+        url_features['url_redirection'] = 0
+
+    return url_features
+# Handle potential NaN values by ensuring feature extraction returns complete data
+def enhanced_extract_url_features_safe(url):
+    """Improved and safe feature extraction with default values for completeness."""
+    return {
+        'url_length': len(url),
+        'special_char_count': sum(1 for char in url if not char.isalnum()),
+        'contains_login': int('login' in url.lower()),
+        'contains_free': int('free' in url.lower()),
+        'contains_win': int('win' in url.lower()),
+        'num_subdomains': url.count('.'),
+        'path_depth': url.count('/'),
+        'query_length': len(url.split('?')[-1]) if '?' in url else 0,
+    }
+
+# Extract and normalize features again
+X_safe = data['url'].apply(enhanced_extract_url_features_safe).apply(pd.Series)
+X_normalized_safe = (X_safe - X_safe.mean()) / X_safe.std()
+
+# Confirm no NaN values now and display sample data
+X_normalized_safe.head(), X_normalized_safe.isnull().sum()
+
+def preprocess_data(df):
+    # Select only required columns, excluding columns to drop
+    columns_to_keep = [col for col in df.columns if col not in [
+        'id_str', 'screen_name', 'location', 'description', 'created_at', 'lang', 'status',
+        'has_extended_profile', 'name'
+    ]]
+    df = df[columns_to_keep].copy()
+
+    # Extract URL features in one go and concatenate to the main DataFrame
+    if 'url' in df.columns:
+        url_features_df = pd.DataFrame(
+            [extract_url_features(url) if isinstance(url, str) and url.strip() else {key: 0 for key in extract_url_features('')}
+             for url in df['url']]
+        )
+        df = pd.concat([df.reset_index(drop=True), url_features_df], axis=1)
+        df.drop(columns=['url'], inplace=True)  # Drop the original 'url' column after extraction
+
+    # Encode categorical features efficiently
+    categorical_cols = ['Verified', 'default_profile']
+    for col in categorical_cols:
+        if col in df.columns:
+            # Use pd.factorize instead of LabelEncoder for faster operation
+            df[col] = pd.factorize(df[col])[0]
+        else:
+            print(f"Warning: Column '{col}' not found in the DataFrame.")
+
+    return df
+
+X_train_sample = X_train[:5000].drop(columns=['User ID'], errors='ignore').copy()
+y_train_sample = y_train[:5000].copy()
+X_test_sample = X_test[:5000].drop(columns=['User ID'], errors='ignore').copy()
+
+# Define numeric and categorical columns
+numeric_features = X_train_sample.select_dtypes(include=['float64', 'int64']).columns
+categorical_features = X_train_sample.select_dtypes(include=['object']).columns
+
+# Preprocessor for numeric and categorical features
+preprocessor_knn = ColumnTransformer(
+    transformers=[
+        ('num', MinMaxScaler(), numeric_features),
+        ('cat', OneHotEncoder(sparse_output=False, handle_unknown='ignore'), categorical_features)
+    ]
+)
+
+
+# Verify column names
+print("Columns in data:", data.columns)
+
+# Ensure no extra whitespace in column names
+data.columns = data.columns.str.strip()
+
+# Separate features and labels
+X = data.drop('Bot Label', axis=1)
+y = data['Bot Label']
+
+# Train-Test Split
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=1)
+
+X_train_sample = X_train[:5000]  # Use only the first 500 samples for testing
+y_train_sample = y_train[:5000]
+print("Shape of X_train:", X_train.shape)
+print("Shape of X_test:", X_test.shape)
+
+# Visualization of Bot vs. Non-Bot Friends vs Followers
+def plot_bot_vs_nonbot(data):
+    bots = data[data['Bot Label'] == 1]
+    non_bots = data[data['Bot Label'] == 0]
+
+    plt.figure(figsize=(10, 10))
+
+    plt.subplot(2, 1, 1)
+    plt.title('Bot Accounts: Friends vs Followers')
+    sns.regplot(x=bots['Friends Count'], y=bots['Follower Count'], color='red')
+    plt.xlim(0, 100)
+    plt.ylim(0, 100)
+
+    plt.subplot(2, 1, 2)
+    plt.title('Non-Bot Accounts: Friends vs Followers')
+    sns.regplot(x=non_bots['Friends Count'], y=non_bots['Follower Count'], color='blue')
+    plt.xlim(0, 100)
+    plt.ylim(0, 100)
+
+    plt.tight_layout()
+    plt.show()
+
+plot_bot_vs_nonbot(data)
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, OneHotEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.svm import SVC
+from sklearn.naive_bayes import MultinomialNB
+
+# Define numeric and categorical columns
+numeric_features = X_train.select_dtypes(include=['float64', 'int64']).columns
+categorical_features = X_train.select_dtypes(include=['object']).columns
+numeric_features = numeric_features.drop(['User ID'])
+
+# Preprocessor for SVM (with StandardScaler for numeric features)
+preprocessor_svm = ColumnTransformer(
+    transformers=[
+        ('num', StandardScaler(), numeric_features),
+        ('cat', OneHotEncoder(handle_unknown='ignore'), categorical_features)
+    ]
+)
+
+# Preprocessor for MultinomialNB (with MinMaxScaler for numeric features)
+preprocessor_nb = ColumnTransformer(
+    transformers=[
+        ('num', MinMaxScaler(), numeric_features),
+        ('cat', OneHotEncoder(handle_unknown='ignore'), categorical_features)
+    ]
+)
+
+# Pipeline for SVM model
+svm_pipeline = Pipeline([
+    ('preprocessor', preprocessor_svm),
+    ('classifier', SVC(kernel='linear', probability=True, C=0.5, random_state=1))
+])
+
+# Scale and fit the SVM model on the sample data
+X_train_sample = X_train[:5000].copy()
+y_train_sample = y_train[:5000].copy()
+X_test_sample = X_test[:5000].copy()
+y_test_sample = y_test[:5000].copy()
+
+# Train and predict with SVM model
+svm_pipeline.fit(X_train_sample, y_train_sample)
+svm_preds = svm_pipeline.predict(X_test_sample)
+evaluate_model(y_test_sample, svm_preds, "Support Vector Machine (SVM)")
+
+# Pipeline for Multinomial Naive Bayes model
+nb_pipeline = Pipeline([
+    ('preprocessor', preprocessor_nb),
+    ('classifier', MultinomialNB())
+])
+
+# Train and predict with Multinomial Naive Bayes model
+nb_pipeline.fit(X_train_sample, y_train_sample)
+nb_preds = nb_pipeline.predict(X_test_sample)
+evaluate_model(y_test_sample, nb_preds, "Multinomial Naive Bayes")
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import MinMaxScaler, OneHotEncoder
+from sklearn.neighbors import KNeighborsClassifier
+
+# Drop 'User ID' column if it’s an identifier
+X_train_sample = X_train[:5000].drop(columns=['User ID'], errors='ignore').copy()
+y_train_sample = y_train[:5000].copy()
+X_test_sample = X_test[:5000].drop(columns=['User ID'], errors='ignore').copy()
+
+# Define numeric and categorical columns
+numeric_features = X_train_sample.select_dtypes(include=['float64', 'int64']).columns
+categorical_features = X_train_sample.select_dtypes(include=['object']).columns
+
+# Preprocessor for numeric and categorical features
+preprocessor_knn = ColumnTransformer(
+    transformers=[
+        ('num', MinMaxScaler(), numeric_features),
+        ('cat', OneHotEncoder(sparse_output=False, handle_unknown='ignore'), categorical_features)
+    ]
+)
+
+# Create a pipeline for KNN
+knn_pipeline = Pipeline([
+    ('preprocessor', preprocessor_knn),
+    ('classifier', KNeighborsClassifier(n_neighbors=5))
+])
+
+# Fit the KNN model using the pipeline on the sample
+knn_pipeline.fit(X_train_sample, y_train_sample)
+
+# Make predictions on the test sample
+knn_preds = knn_pipeline.predict(X_test_sample)
+evaluate_model(y_test[:5000], knn_preds, "K-Nearest Neighbors")
+
+from sklearn.pipeline import Pipeline
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+import numpy as np
+import pandas as pd
+
+# Sample the dataset further to reduce memory usage
+X_train_sample = X_train[:2000].copy()  # Adjust as needed for memory
+y_train_sample = y_train[:2000].copy()
+X_test_sample = X_test[:2000].copy()
+
+# Define numeric and categorical columns
+numeric_features = X_train_sample.select_dtypes(include=['float64', 'int64']).columns
+categorical_features = X_train_sample.select_dtypes(include=['object']).columns
+
+# Apply Label Encoding to categorical features with safety checks for unseen categories
+label_encoders = {}
+for col in categorical_features:
+    le = LabelEncoder()
+    # Fit on training data and transform training data
+    le.fit(X_train_sample[col].astype(str))
+    X_train_sample[col] = le.transform(X_train_sample[col].astype(str))  # Transform training data
+
+    # Handle unseen categories in test set: map to 'unknown' label (new category)
+    unseen_categories = set(X_test_sample[col].astype(str)) - set(le.classes_)
+    if unseen_categories:
+        le.classes_ = np.append(le.classes_, list(unseen_categories))  # Add new classes for unseen categories
+    X_test_sample[col] = le.transform(X_test_sample[col].astype(str))  # Transform test data
+
+    label_encoders[col] = le  # Store the encoder for future use
+
+# Preprocessor that scales numeric features only (categorical already encoded as numeric)
+preprocessor = ColumnTransformer(
+    transformers=[
+        ('num', StandardScaler(), numeric_features)
+    ],
+    remainder='passthrough'  # Categorical features are already encoded as numeric
+)
+
+# Pipeline for RandomForest with very limited n_estimators
+pipeline = Pipeline([
+    ('preprocessor', preprocessor),
+    ('classifier', RandomForestClassifier(n_estimators=5, criterion='entropy', random_state=0))  # Reduce further if needed
+])
+
+# Fit the pipeline on the sample
+pipeline.fit(X_train_sample, y_train_sample)
+
+# Make predictions
+rf_preds = pipeline.predict(X_test_sample)
+evaluate_model(y_test[:2000], rf_preds, "Random Forest")
+
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.preprocessing import LabelEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
+import pandas as pd
+import numpy as np
+
+# Sample the dataset further to reduce memory usage (Optional step to improve performance with larger datasets)
+X_train_sample = X_train[:2000].copy()  # Adjust as needed for memory
+y_train_sample = y_train[:2000].copy()
+X_test_sample = X_test[:2000].copy()
+
+# Define numeric and categorical columns
+numeric_features = X_train_sample.select_dtypes(include=['float64', 'int64']).columns
+categorical_features = X_train_sample.select_dtypes(include=['object']).columns
+
+# Apply Label Encoding to categorical features
+# Train the Q-learning agent
+def train_agent(data, episodes=100, max_steps=50):
+    env = BotDetectionEnvironment(data)  # Pass the data here
+    agent = QLearningAgent(env)
+
+    for episode in range(episodes):
+        state = env.reset()
+        for step in range(max_steps):  # Limit steps per episode
+            action = agent.choose_action(state)
+            next_state, reward, done = env.step(action)
+            agent.update_q_table(state, action, reward, next_state)
+            state = next_state
+            if done:
+                break
+        agent.decay_exploration()
+
+    return agent
+
+# Function to evaluate model performance using standard metrics
+def evaluate_model(y_true, y_pred, model_name="Model"):
+    """
+    Evaluate model performance by calculating various metrics.
+
+    :param y_true: True labels
+    :param y_pred: Predicted labels
+    :param model_name: Name of the model being evaluated
+    """
+    accuracy = accuracy_score(y_true, y_pred)
+    precision = precision_score(y_true, y_pred)
+    recall = recall_score(y_true, y_pred)
+    f1 = f1_score(y_true, y_pred)
+
+    # Print results
+    print(f"Evaluation for {model_name}:")
+    print(f"Accuracy: {accuracy:.4f}")
+    print(f"Precision: {precision:.4f}")
+    print(f"Recall: {recall:.4f}")
+    print(f"F1 Score: {f1:.4f}")
+
+# Classify using the trained RL agent
+def classify_with_rl_model(data, agent):
+    classifications = []
+    for _, row in data.iterrows():
+        state = int(row['Bot Label'])  # Use Bot Label as state (actual label for simulation)
+        action = agent.choose_action(state)  # Classify (action)
+        classifications.append(action)
+    return classifications
+
+# Assuming 'data' contains the dataset and has a 'Bot Label' column for true labels
+# Train the RL agent
+trained_agent = train_agent(data, episodes=1000, max_steps=50)
+
+# Classify the data using the trained RL agent
+rl_classifications = classify_with_rl_model(data, trained_agent)
+
+# True labels
+y_true = data['Bot Label'].values
+
+# Evaluate the RL agent's classifications
+print("\nEvaluation of RL Classifier:")
+evaluate_model(y_true, rl_classifications, model_name="Reinforcement Learning Classifier")
+
+#HeatMap
+plt.figure(figsize=(10, 6))
+sns.heatmap(trained_agent.q_table, annot=False, cmap='viridis', cbar=True, fmt='.1f')
+plt.title("Q-Table Heatmap")
+plt.xlabel("Actions")
+plt.ylabel("States")
+plt.show()
+
+# Store Q-tables after each episode for visualization
+q_tables_over_time = []
+
+def train_agent_with_q_plot(data, episodes=100, max_steps=50):
+    env = BotDetectionEnvironment(data)
+    agent = QLearningAgent(env)
+    for episode in range(episodes):
+        state = env.reset()
+        for step in range(max_steps):
+            action = agent.choose_action(state)
+            next_state, reward, done = env.step(action)
+            agent.update_q_table(state, action, reward, next_state)
+            state = next_state
+            if done:
+                break
+        agent.decay_exploration()
+        q_tables_over_time.append(np.copy(agent.q_table))  # Store Q-table at each step
+
+    return agent, q_tables_over_time
+
+# Train and collect Q-tables over time
+trained_agent, q_tables_over_time = train_agent_with_q_plot(data)
+
+# Plot Q-values over episodes for a specific state-action pair (example: state 0, action 0)
+episode_numbers = list(range(len(q_tables_over_time)))
+q_values = [q_tables_over_time[i][0, 0] for i in episode_numbers]
+
+plt.plot(episode_numbers, q_values, label="Q-value for state 0, action 0")
+plt.xlabel("Episodes")
+plt.ylabel("Q-value")
+plt.title("Q-value Change Over Time (State 0, Action 0)")
+plt.legend()
+plt.show()
+
+import random
+import numpy as np
+import pandas as pd
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+
+# Bot Detection Environment
+class BotDetectionEnvironment:
+    def __init__(self):
+        self.state_space = [0, 1]  # States: Non-Bot (0), Bot (1)
+        self.action_space = [0, 1]  # Actions: Classify as Non-Bot (0) or Bot (1)
+        self.state = random.choice(self.state_space)  # Initial state
+
+    def step(self, action):
+        reward = 1 if action == self.state else -1  # Reward: +1 for correct, -1 for incorrect
+        self.state = random.choice(self.state_space)  # Randomly change state
+        return self.state, reward
+
+    def reset(self):
+        self.state = random.choice(self.state_space)  # Random reset to a state
+        return self.state
+
+# Learning Automata Agent
+class LearningAutomataAgent:
+    def __init__(self, environment, learning_rate=0.1):
+        self.env = environment
+        self.action_probabilities = np.ones(len(environment.action_space)) / len(environment.action_space)  # Equal initial probabilities
+        self.learning_rate = learning_rate
+
+    def choose_action(self):
+        return np.random.choice(self.env.action_space, p=self.action_probabilities)  # Select action based on probability
+
+    def update_probabilities(self, action, reward):
+        if reward > 0:  # Correct classification
+            self.action_probabilities[action] += self.learning_rate * (1 - self.action_probabilities[action])
+        else:  # Incorrect classification
+            self.action_probabilities[action] -= self.learning_rate * self.action_probabilities[action]
+
+        # Normalize probabilities to keep them in range [0, 1]
+        self.action_probabilities = np.clip(self.action_probabilities, 0, 1)
+        self.action_probabilities /= np.sum(self.action_probabilities)
+
+# Train the Learning Automata Agent
+def train_agent(episodes=100, max_steps=50):
+    env = BotDetectionEnvironment()
+    agent = LearningAutomataAgent(env)
+
+    for episode in range(episodes):
+        state = env.reset()
+        for step in range(max_steps):
+            action = agent.choose_action()
+            next_state, reward = env.step(action)
+            agent.update_probabilities(action, reward)
+            state = next_state
+
+    return agent
+
+# Evaluate model performance by calculating various metrics
+def evaluate_model(y_true, y_pred, model_name="Model"):
+    accuracy = accuracy_score(y_true, y_pred)
+    precision = precision_score(y_true, y_pred)
+    recall = recall_score(y_true, y_pred)
+    f1 = f1_score(y_true, y_pred)
+
+    print(f"Evaluation for {model_name}:")
+    print(f"Accuracy: {accuracy:.4f}")
+    print(f"Precision: {precision:.4f}")
+    print(f"Recall: {recall:.4f}")
+    print(f"F1 Score: {f1:.4f}")
+
+# Function to classify using the trained Learning Automata agent
+def classify_with_la_model(data, agent):
+    classifications = []
+    for _, row in data.iterrows():
+        state = int(row['Bot Label'])  # Actual label to simulate state
+        action = agent.choose_action()  # Classification action based on probabilities
+        classifications.append(action)
+    return classifications
+
+# Example: Assuming 'data' is your dataset and it has a 'Bot Label' column
+# Load your dataset here
+# data = pd.read_csv('your_data.csv')
+
+# Train the learning automata agent
+trained_agent = train_agent(episodes=100, max_steps=50)
+
+# Classify using the learning automata agent
+la_classifications = classify_with_la_model(data, trained_agent)
+
+# Display results
+print("Learning Automata-based Classifications (first 20000 samples):")
+print(la_classifications[:20000])
+
+# Evaluate the learning automata agent's classifications
+y_true = data['Bot Label'].values  # True labels
+
+# Rule-based URL classification
+def classify_url(url):
+    features = extract_url_features(url)
+
+    # Heuristic for malicious URL based on feature patterns
+    malicious_keywords = ['login', 'free', 'win', 'giveaway']
+    legitimate_keywords = ['secure', 'trusted', 'bank', 'login', 'https']
+
+    # Check for malicious patterns
+    if any(keyword in url.lower() for keyword in malicious_keywords):
+        return "MALICIOUS"
+
+    # Check for legitimate patterns
+    if features['has_https'] and not features['contains_login'] and not features['contains_free']:
+        return "LEGITIMATE"
+
+    # Further checks: if URL redirects frequently or contains suspicious elements
+    if features['url_redirection'] or features['contains_number']:
+        return "MALICIOUS"
+
+    return "LEGITIMATE"  # Default classification
+
+# Example usage with user input
+url = input("Enter a URL to classify (Malicious or Legitimate): ")
+prediction = classify_url(url)
+print(f"The URL is classified as: {prediction}")
+
+
